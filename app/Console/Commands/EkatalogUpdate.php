@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Arr;
 use App\Models\EkatalogV5Paket;
 use App\Models\EkatalogV6Paket;
 
@@ -40,14 +41,47 @@ class EkatalogUpdate extends Command
 
         if ($response->successful()) {
             $data = $response->json();
-            foreach ($data as $item) {
-                $model::create($item);
+            $total = count($data);
 
+            foreach ($data as $index => $item) {
+                // 🧹 Sanitasi data sebelum disimpan
+                $item = $this->sanitizeData($item);
+
+                try {
+                    $model::create($item);
+                } catch (\Throwable $e) {
+                    // Tangani error agar loop tidak berhenti
+                    $this->error("⚠️ Gagal simpan baris ke-" . ($index + 1) . " model {$model}: " . $e->getMessage());
+                    continue;
+                }
             }
-            $this->info("✔ Data disimpan untuk model: {$model}");
+
+            $this->info("✔ Data ({$total}) disimpan untuk model: {$model}");
         } else {
             $this->error("✖ Gagal mengambil data dari {$url}");
         }
     }
-}
 
+    /**
+     * Bersihkan data mentah dari API agar sesuai tipe kolom DB
+     */
+    protected function sanitizeData(array $data): array
+    {
+        // Bersihkan kd_rup jika ada duplikasi nilai seperti "58488552,58488552"
+        if (isset($data['kd_rup']) && is_string($data['kd_rup'])) {
+            $parts = array_unique(array_map('trim', explode(',', $data['kd_rup'])));
+            $data['kd_rup'] = $parts[0] ?? null;
+        }
+
+        // Bersihkan juga kolom lain yang berpotensi numeric tapi dikirim string berganda
+        foreach (['total_harga', 'ongkir', 'jml_produk', 'jml_jenis_produk'] as $numericField) {
+            if (isset($data[$numericField]) && is_string($data[$numericField])) {
+                // Hapus karakter non-digit, kecuali titik desimal
+                $data[$numericField] = preg_replace('/[^\d.]/', '', $data[$numericField]);
+            }
+        }
+
+        // Hilangkan field kosong/null agar tidak menyebabkan QueryException
+        return Arr::where($data, fn($v) => $v !== null && $v !== '');
+    }
+}
